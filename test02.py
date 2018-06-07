@@ -10,8 +10,11 @@ import traceback
 import math as m
 import numpy as np
 from time import time
-from queue import Queue, PriorityQueue
-import cProfile
+from queue import PriorityQueue
+import numba as nb
+#import cProfile
+
+pf_test = []
 
 pg.init()
 
@@ -21,6 +24,7 @@ gameDisplay = pg.display.set_mode((W,H))
 pg.display.set_caption('Test Window')
 
 clock = pg.time.Clock()
+
 
 class Engagement():
     def __init__(self, disp):
@@ -67,11 +71,12 @@ class Engagement():
                 if self.t_mouse_hold < 0.2:
                     mpos_adj = tpldiff(pg.mouse.get_pos(), self.sc_loc)
                     color = self.disp.get_at(mpos_adj)
-                    print(color)
+                    #print(color)
                     if color[0] == 1:
                         self.activeunit = self.unitlist[color[1]]
                     if color[0] == 0:
                         self.activeunit.target = mpos_adj
+                        self.activeunit.pathcheck = 10
         if event.type == pg.MOUSEMOTION:
             if self.mouse_hold: self.sc_loc = tplsum(self.sc_loc, event.rel)
                 
@@ -94,10 +99,6 @@ class Engagement():
             unit.tick()
             pg.draw.ellipse(self.disp, (1, unit.eid, 0),
                             pg.Rect((unit.loc[0]-25, unit.loc[1]-15), (50,30)))
-#    
-#    def tick_units(self):
-#        for unit in self.unitlist:
-#            unit.tick()
             
     def draw_display(self):
         self.check_locs()
@@ -105,35 +106,70 @@ class Engagement():
         self.disp.fill((45, 16, 20))
         self.disp.blit(self.bgimg, tplsum((0,0), self.sc_loc))
         for unit in self.unitlist[np.argsort(self.loclist[:,1])]:
-            if unit == self.activeunit: self.draw_cursor(unit.loc, 1, 1)
-            else: self.draw_cursor(unit.loc, 1, 0)
             unit.draw()
         pg.display.update()
     
     def adjacent(self, origin):
-        adj = []
+        adj = set()
         for th in np.arange(0, 2*m.pi, m.pi/4):
-            waypoint = tplsum(origin, (int(2*m.cos(th)), int(2*m.sin(th))))
+            waypoint = tplsum(origin, (3*int(1.5*m.cos(th)), 3*int(1.5*m.sin(th))))
+            #try: 
             color = self.disp.get_at(tuple(int(x) for x in waypoint))
+            #except: print("test")
             if color[0] == 0 and color[1] == 0:
-                adj.append(waypoint)
+                adj.add(waypoint)
         return adj
     
-    def pathfind_bf(self, origin, target):
-        frontier = Queue()
-        frontier.put(origin)
+    def adj_jpt(self, origin, parent):
+        if parent == None:
+            return self.adjacent(origin)
+        S = 3 #tile side length
+        adj = []
+        blocked = []
+        for i in range(8):
+            step = ((S*-sign(i-4)*int(i%4!=0)), S*-sign(int((i+2)%8-4))*int((i+2)%4!=0))
+            adj.append(tplsum(origin, step))
+            color = self.disp.get_at(tuple(int(x) for x in adj[-1]))
+            if color[0] != 0 or color[1] != 0:
+                blocked.append(i)
+        p_dir = tpldir(origin, parent)
+        z = np.angle(p_dir[0]+p_dir[1]*1j)*4/m.pi
+        adj_pruned = set()
+        for idx in jpt_check(blocked, z):
+            adj_pruned.add(adj[idx])
+                
+        return adj_pruned
+    
+    def move_cost(self, current, next):
+        return tpldist(current, next)
+        
+    #Find path from <origin> to <target> using the Jump Point algorithm
+    def pathfind_jpt(self, origin, target):
+        frontier = PriorityQueue()
+        frontier.put((0, origin))
         came_from = {}
+        cost_so_far = {}
         came_from[origin] = None
+        cost_so_far[origin] = 0
         
         while not frontier.empty():
-            current = frontier.get()
+            current = frontier.get()[1]
+            
             if tpldist(current, target) <= 3:
                 target = current
                 break
-            for waypoint in self.adjacent(current):
-                if waypoint not in came_from:
-                    frontier.put(waypoint)
-                    came_from[waypoint] = current
+            
+            try: self.adj_jpt(current, came_from[current])
+            except: print('no')
+            
+            for next in self.adj_jpt(current, came_from[current]):
+                new_cost = cost_so_far[current] + self.move_cost(current, next)
+                if next not in cost_so_far or new_cost < cost_so_far[next]:
+                    if next not in came_from:
+                        cost_so_far[next] = new_cost
+                        priority = new_cost + tpldist(next, target)
+                        frontier.put((priority, next))
+                        came_from[next] = current
         
         current = target
         path = []
@@ -143,29 +179,30 @@ class Engagement():
         path.reverse()
         
         return path
-    
+      
+    #Find path from <origin> to <target> using the A* algorithm
     def pathfind_astar(self, origin, target):
         frontier = PriorityQueue()
-        frontier.put(origin, 0)
+        frontier.put((0, origin))
         came_from = {}
         cost_so_far = {}
         came_from[origin] = None
         cost_so_far[origin] = 0
         
         while not frontier.empty():
-            current = frontier.get()
+            current = frontier.get()[1]
             
             if tpldist(current, target) <= 3:
                 target = current
                 break
             
             for next in self.adjacent(current):
-                new_cost = cost_so_far[current] + 1 #graph.cost(current, next)
+                new_cost = cost_so_far[current] + self.move_cost(current, next)
                 if next not in cost_so_far or new_cost < cost_so_far[next]:
                     if next not in came_from:
                         cost_so_far[next] = new_cost
-                        priority = new_cost + tpldist(target, next)
-                        frontier.put(next, priority)
+                        priority = new_cost + tpldist(next, target)
+                        frontier.put((priority, next))
                         came_from[next] = current
         
         current = target
@@ -191,11 +228,13 @@ class Unit():
         
         self.target = []
         self.path = []
-        self.mvspd = 1
+        self.mvspd = 5
         
         self.animset = "stand"
         self.animsubframe = 0
         self.animframe = 0
+        
+        self.pathcheck = 0
     
     def tick(self):
         #Update animation frames
@@ -205,21 +244,32 @@ class Unit():
             self.animframe += 1
         if self.animframe >= 4: self.animframe = 0
         
-        #Update Location
-        #cProfile.run(self.engmt.pathfind_bf(self.loc, self.target))
-        if self.target: self.path = self.engmt.pathfind_bf(self.loc, self.target)
-        if len(self.path) > 0:
+        #Check path
+        if self.pathcheck >= 0: 
+            if self.target:
+                t1 = time()
+                self.path = self.engmt.pathfind_astar(self.loc, self.target)
+                pf_test.append(time() - t1)
+            self.pathcheck = 0
+        else: self.pathcheck += 1
+        
+        #Update location
+        mvmt = self.mvspd
+        while mvmt > 0 and self.path:
             dist_wp = tpldist(self.loc, self.path[0])
-            if dist_wp < self.mvspd:
+            if dist_wp <= mvmt:
                 self.loc = self.path[0]
                 self.path = self.path[1:]
+                mvmt -= dist_wp
             else:
-                #print(tpldir(self.loc, self.path[0]))
                 self.loc = tplsum(self.loc, tplmult(tpldir(self.loc, self.path[0]), self.mvspd))
-        else: self.target = []
+                mvmt = 0
+        if not self.path: self.target = []
     
     def draw(self):
         #print(self.animframe)
+        if self == self.engmt.activeunit: self.engmt.draw_cursor(self.loc, 1, 1)
+        else: self.engmt.draw_cursor(self.loc, 1, 0)
         self.pawn.fill(pg.Color(0,0,0,0))
         self.pawn.blit(self.pawnsheet, (0,0), (0+self.pawndim[0]*self.animframe, 0, self.pawndim[0], self.pawndim[1]))
         self.engmt.disp.blit(self.pawn,
@@ -232,6 +282,21 @@ def tplmult(a,b,return_int=False):
     else: return tuple(a[i]*b for i in range(len(a)))
 def tpldist(a,b): return m.sqrt(sum(tuple((a[i]-b[i])**2 for i in range(len(a)))))
 def tpldir(a,b): return tuple(tplmult(tpldiff(b,a),1/tpldist(a,b)))
+def sign(x): return (x > 0) - (x < 0)
+def mod8sub(a,b): return (a - b + 4) % 8 - 4
+
+def jpt_check(blocked, z): #blocked=(y1,y2,...), z=parent
+    pruned = set()
+    if z%2 == 0: #straight parent
+        pruned.add(int((z+4)%8))
+        for y in blocked:
+            if m.fabs(mod8sub(y,z)) == 2: pruned.add(int(((y-z)%8/2+y)%8))
+    else: #diagonal parent
+        for i in range(3): pruned.add(int((z+i+3)%8))
+        for y in blocked:
+            if m.fabs(mod8sub(y,z)) == 1: pruned.add(int(((y-z)%8+y)%8))
+    pruned = pruned.difference(blocked)
+    return pruned
 
 def gameLoop():
     
@@ -239,6 +304,8 @@ def gameLoop():
         engmt = Engagement(gameDisplay)
         engmt.add_unit(Unit(), (200,200))
         engmt.add_unit(Unit(), (300,300))
+        
+        t_fps = pg.time.get_ticks()
         
         gameExit = False
         while not gameExit:
@@ -254,6 +321,8 @@ def gameLoop():
             engmt.draw_display()
                         
             clock.tick(30)
+            print("FPS: %f"%(1000./(pg.time.get_ticks()-t_fps)))
+            t_fps = pg.time.get_ticks()
             
     except Exception as e:
         traceback.print_exc()
