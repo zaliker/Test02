@@ -11,7 +11,8 @@ import math as m
 import numpy as np
 from time import time
 from queue import PriorityQueue
-import numba as nb
+import random
+#import numba as nb
 #import cProfile
 
 pf_test = []
@@ -79,6 +80,9 @@ class Engagement():
                         self.activeunit.pathcheck = 10
         if event.type == pg.MOUSEMOTION:
             if self.mouse_hold: self.sc_loc = tplsum(self.sc_loc, event.rel)
+        if event.type == pg.KEYDOWN:
+            if event.key == 109:
+                self.activeunit.target = (400,300)
                 
     
     def check_locs(self):
@@ -114,7 +118,8 @@ class Engagement():
         for th in np.arange(0, 2*m.pi, m.pi/4):
             waypoint = tplsum(origin, (3*int(1.5*m.cos(th)), 3*int(1.5*m.sin(th))))
             #try: 
-            color = self.disp.get_at(tuple(int(x) for x in waypoint))
+            try: color = self.disp.get_at(tuple(int(x) for x in waypoint))
+            except: print(waypoint, "is not searchable")
             #except: print("test")
             if color[0] == 0 and color[1] == 0:
                 adj.add(waypoint)
@@ -124,16 +129,20 @@ class Engagement():
         if parent == None:
             return self.adjacent(origin)
         S = 3 #tile side length
+        #steps = [(1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1)]
+        steps = [(S, 0), (S, -S), (0, -S), (-S, -S), (-S, 0), (-S, S), (0, S), (S, S)]
         adj = []
         blocked = []
         for i in range(8):
-            step = ((S*-sign(i-4)*int(i%4!=0)), S*-sign(int((i+2)%8-4))*int((i+2)%4!=0))
+            #step = (S*-sign(int((i+2)%8-4))*int((i+2)%4!=0), (S*sign(i-4)*int(i%4!=0)))
+            step = steps[i]
             adj.append(tplsum(origin, step))
-            color = self.disp.get_at(tuple(int(x) for x in adj[-1]))
+            try: color = self.disp.get_at(tuple(int(x) for x in adj[-1]))
+            except: print(adj[-1], "is not searchable")
             if color[0] != 0 or color[1] != 0:
                 blocked.append(i)
         p_dir = tpldir(origin, parent)
-        z = np.angle(p_dir[0]+p_dir[1]*1j)*4/m.pi
+        z = (np.angle(p_dir[0]-p_dir[1]*1j)*4/m.pi)%8
         adj_pruned = set()
         for idx in jpt_check(blocked, z):
             adj_pruned.add(adj[idx])
@@ -193,15 +202,19 @@ class Engagement():
             current = frontier.get()[1]
             
             if tpldist(current, target) <= 3:
+                came_from[target] = came_from[current]
                 target = current
                 break
+            
+            try: self.adj_jpt(current, came_from[current])
+            except: print('no')
             
             for next in self.adjacent(current):
                 new_cost = cost_so_far[current] + self.move_cost(current, next)
                 if next not in cost_so_far or new_cost < cost_so_far[next]:
                     if next not in came_from:
                         cost_so_far[next] = new_cost
-                        priority = new_cost + tpldist(next, target)
+                        priority = new_cost + tpldist(next, target)**2
                         frontier.put((priority, next))
                         came_from[next] = current
         
@@ -209,7 +222,8 @@ class Engagement():
         path = []
         while current != origin:
             path.append(current)
-            current = came_from[current]
+            try: current = came_from[current]
+            except: None
         path.reverse()
         
         return path
@@ -220,7 +234,7 @@ class Unit():
         self.engmt = None
         self.eid = None
         
-        self.pawnfile = "Assets\\basicV4-sheet.png"
+        self.pawnfile = "Assets\\basicV5-sheet.png"
         self.pawnsheet = pg.image.load(self.pawnfile)
         self.pawnsheet = pg.transform.scale(self.pawnsheet, tplmult(self.pawnsheet.get_rect().size, 2))
         self.pawndim = (80,120)
@@ -228,27 +242,41 @@ class Unit():
         
         self.target = []
         self.path = []
-        self.mvspd = 5
+        self.mvspd = 2
         
         self.animset = "stand"
         self.animsubframe = 0
         self.animframe = 0
         
+        #self.animtile = (40,60)
+        self.animattr = {} #index and length of animation
+        self.animattr["stand"] = (0,4)
+        self.animattr["run"] = (1,6)
+        
         self.pathcheck = 0
     
     def tick(self):
+        #update animation set
+        if self.animset != "run" and self.target:
+            self.animset = "run"
+            self.animframe = 0
+        if self.animset != "stand" and not self.target:   
+            self.animset = "stand"
+        
         #Update animation frames
         self.animsubframe += 1
         if self.animsubframe >= 6:
             self.animsubframe = 0
             self.animframe += 1
-        if self.animframe >= 4: self.animframe = 0
+        if self.animframe >= self.animattr[self.animset][1]: self.animframe = 0
         
         #Check path
         if self.pathcheck >= 0: 
             if self.target:
                 t1 = time()
-                self.path = self.engmt.pathfind_astar(self.loc, self.target)
+                try:
+                    self.path = self.engmt.pathfind_astar(self.loc, self.target)
+                except: print('no')
                 pf_test.append(time() - t1)
             self.pathcheck = 0
         else: self.pathcheck += 1
@@ -271,7 +299,7 @@ class Unit():
         if self == self.engmt.activeunit: self.engmt.draw_cursor(self.loc, 1, 1)
         else: self.engmt.draw_cursor(self.loc, 1, 0)
         self.pawn.fill(pg.Color(0,0,0,0))
-        self.pawn.blit(self.pawnsheet, (0,0), (0+self.pawndim[0]*self.animframe, 0, self.pawndim[0], self.pawndim[1]))
+        self.pawn.blit(self.pawnsheet, (0,0), (self.pawndim[0]*self.animframe, self.pawndim[1]*self.animattr[self.animset][0], self.pawndim[0], self.pawndim[1]))
         self.engmt.disp.blit(self.pawn,
                              tplsum(tpldiff(self.loc, (self.pawndim[0]/2+3,101)), self.engmt.sc_loc))
         
@@ -302,17 +330,34 @@ def gameLoop():
     
     try:
         engmt = Engagement(gameDisplay)
-        engmt.add_unit(Unit(), (200,200))
-        engmt.add_unit(Unit(), (300,300))
+        engmt.add_unit(Unit(), (350,200))
+        engmt.add_unit(Unit(), (300,400))
         
         t_fps = pg.time.get_ticks()
+        frameticks = 0
         
         gameExit = False
         while not gameExit:
             
             engmt.draw_tick()
-           # engmt.tick_units()
+            #engmt.tick_units()
             
+#            result = [[],[]]
+#            for i in range(25, 100):
+#                origin = (300,400)
+#                th = random.random()*2*m.pi
+#                target = tplsum(origin,(i*m.cos(th), i*m.sin(th)))
+#                print(i, origin, target)
+#                t0 = time()
+#                engmt.pathfind_astar(origin, target)
+#                t1 = time()
+#                engmt.pathfind_jpt(origin, target)
+#                t2 = time()
+#                result[0].append(t1-t0)
+#                result[1].append(t2-t1)
+#            return result
+           
+           
             for event in pg.event.get():
                 if event.type == pg.QUIT or (event.type == pg.KEYDOWN and event.key == 27):
                     gameExit = True
@@ -321,8 +366,12 @@ def gameLoop():
             engmt.draw_display()
                         
             clock.tick(30)
-            print("FPS: %f"%(1000./(pg.time.get_ticks()-t_fps)))
-            t_fps = pg.time.get_ticks()
+            
+            frameticks += 1
+            if frameticks > 15:
+                print("FPS: %f"%(15*1000./(pg.time.get_ticks()-t_fps)))
+                t_fps = pg.time.get_ticks()
+                frameticks = 0
             
     except Exception as e:
         traceback.print_exc()
