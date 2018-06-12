@@ -30,6 +30,10 @@ clock = pg.time.Clock()
 class Engagement():
     def __init__(self, disp):
         self.disp = disp
+        self.mask = {}
+        self.mask["allies"] = pg.mask.Mask((800,600))
+        self.mask["enemies"] = pg.mask.Mask((800,600))
+        self.mask["map"] = pg.mask.Mask((800,600))
         
         self.bgfile = "Assets\\cave01.png"
         self.bgimg = pg.image.load(self.bgfile)
@@ -57,7 +61,7 @@ class Engagement():
         unit.engmt = self
         unit.eid = len(self.unitlist)
         self.unitlist = np.append(self.unitlist, unit)
-        self.activeunit = unit
+        #self.activeunit = unit
         
     def parse_input(self, event):
         #print(event)
@@ -71,13 +75,14 @@ class Engagement():
                 self.mouse_hold = False
                 if self.t_mouse_hold < 0.2:
                     mpos_adj = tpldiff(pg.mouse.get_pos(), self.sc_loc)
-                    color = self.disp.get_at(mpos_adj)
+                    #color = self.disp.get_at(mpos_adj)
                     #print(color)
-                    if color[0] == 1:
-                        self.activeunit = self.unitlist[color[1]]
-                    if color[0] == 0:
-                        self.activeunit.target = mpos_adj
-                        self.activeunit.pathcheck = 10
+                    if self.mask["allies"].get_at(mpos_adj):
+                        self.activeunit = self.unitlist[0]
+                    else:
+                        if self.activeunit:
+                            self.activeunit.target = mpos_adj
+                            self.activeunit.pathcheck = 10
         if event.type == pg.MOUSEMOTION:
             if self.mouse_hold: self.sc_loc = tplsum(self.sc_loc, event.rel)
         if event.type == pg.KEYDOWN:
@@ -104,6 +109,13 @@ class Engagement():
             pg.draw.ellipse(self.disp, (1, unit.eid, 0),
                             pg.Rect((unit.loc[0]-25, unit.loc[1]-15), (50,30)))
             
+    def draw_masks(self):
+        for unit in self.unitlist:
+            unit.tick()
+            self.mask["allies"].draw(unit.mask, tplint(tpldiff(unit.loc, tplmult(unit.maskdim, 0.5))))
+            print(self.mask["allies"].get_at(pg.mouse.get_pos()))
+        #pg.draw.lines(self.disp, (200,150,150), 1, self.mask["allies"].outline())
+            
     def draw_display(self):
         self.check_locs()
         #self.disp.fill((255,255,255))
@@ -113,16 +125,16 @@ class Engagement():
             unit.draw()
         pg.display.update()
     
-    def adjacent(self, origin):
+    def adj_set(self, S):
+        return ((S, 0), (S, -S), (0, -S), (-S, -S), (-S, 0), (-S, S), (0, S), (S, S))
+    
+    def adjacent(self, origin, s):
         adj = set()
-        for th in np.arange(0, 2*m.pi, m.pi/4):
-            waypoint = tplsum(origin, (3*int(1.5*m.cos(th)), 3*int(1.5*m.sin(th))))
-            #try: 
-            try: color = self.disp.get_at(tuple(int(x) for x in waypoint))
-            except: print(waypoint, "is not searchable")
+        for next in self.adj_set(s):
+            color = self.disp.get_at(tuple(int(x) for x in tplsum(origin, next)))
             #except: print("test")
             if color[0] == 0 and color[1] == 0:
-                adj.add(waypoint)
+                adj.add(tplsum(origin, next))
         return adj
     
     def adj_jpt(self, origin, parent):
@@ -190,7 +202,7 @@ class Engagement():
         return path
       
     #Find path from <origin> to <target> using the A* algorithm
-    def pathfind_astar(self, origin, target):
+    def pathfind_astar(self, origin, target, s):
         frontier = PriorityQueue()
         frontier.put((0, origin))
         came_from = {}
@@ -201,15 +213,17 @@ class Engagement():
         while not frontier.empty():
             current = frontier.get()[1]
             
-            if tpldist(current, target) <= 3:
-                came_from[target] = came_from[current]
-                target = current
+            if current == target: break
+            
+            if tpldist(current, target) <= s:
+                came_from[target] = current
+                #target = current
                 break
             
             try: self.adj_jpt(current, came_from[current])
-            except: print('no')
+            except: None# print('no')
             
-            for next in self.adjacent(current):
+            for next in self.adjacent(current, s):
                 new_cost = cost_so_far[current] + self.move_cost(current, next)
                 if next not in cost_so_far or new_cost < cost_so_far[next]:
                     if next not in came_from:
@@ -234,6 +248,7 @@ class Unit():
         self.engmt = None
         self.eid = None
         
+        #Define pawn animation set
         self.pawnfile = "Assets\\basicV5-sheet.png"
         self.pawnsheet = pg.image.load(self.pawnfile)
         self.pawnsheet = pg.transform.scale(self.pawnsheet, tplmult(self.pawnsheet.get_rect().size, 2))
@@ -244,12 +259,17 @@ class Unit():
         self.path = []
         self.mvspd = 2
         
+        self.maskdim = (50,30)
+        self.mask = pg.Surface(self.maskdim, pg.SRCALPHA)
+        pg.draw.ellipse(self.mask, (0,0,0), pg.Rect((0,0), (50,30)))
+        self.mask = pg.mask.from_surface(self.mask)
+        
         self.animset = "stand"
         self.animsubframe = 0
         self.animframe = 0
         
         #self.animtile = (40,60)
-        self.animattr = {} #index and length of animation
+        self.animattr = {} #index and duration of animation
         self.animattr["stand"] = (0,4)
         self.animattr["run"] = (1,6)
         
@@ -275,8 +295,8 @@ class Unit():
             if self.target:
                 t1 = time()
                 try:
-                    self.path = self.engmt.pathfind_astar(self.loc, self.target)
-                except: print('no')
+                    self.path = self.engmt.pathfind_astar(self.loc, self.target, 50)
+                except: traceback.print_exc()
                 pf_test.append(time() - t1)
             self.pathcheck = 0
         else: self.pathcheck += 1
@@ -293,6 +313,7 @@ class Unit():
                 self.loc = tplsum(self.loc, tplmult(tpldir(self.loc, self.path[0]), self.mvspd))
                 mvmt = 0
         if not self.path: self.target = []
+        
     
     def draw(self):
         #print(self.animframe)
@@ -302,14 +323,16 @@ class Unit():
         self.pawn.blit(self.pawnsheet, (0,0), (self.pawndim[0]*self.animframe, self.pawndim[1]*self.animattr[self.animset][0], self.pawndim[0], self.pawndim[1]))
         self.engmt.disp.blit(self.pawn,
                              tplsum(tpldiff(self.loc, (self.pawndim[0]/2+3,101)), self.engmt.sc_loc))
+        #pg.draw.lines(self.engmt.disp, (200,150,150), 1, self.mask.outline())
         
 def tplsum(a,b): return tuple(a[i]+b[i] for i in range(len(a)))
-def tpldiff(a,b): return tuple(a[i]-b[i] for i in range(len(a)))
+def tpldiff(a,b,return_int=False): return tuple(a[i]-b[i] for i in range(len(a)))
 def tplmult(a,b,return_int=False):
-    if return_int: return tuple(m.floor(a[i]*b) for i in range(len(a)))
+    if return_int: return tuple(int(a[i]*b) for i in range(len(a)))
     else: return tuple(a[i]*b for i in range(len(a)))
 def tpldist(a,b): return m.sqrt(sum(tuple((a[i]-b[i])**2 for i in range(len(a)))))
 def tpldir(a,b): return tuple(tplmult(tpldiff(b,a),1/tpldist(a,b)))
+def tplint(a): return tuple(int(a[i]) for i in range(len(a)))
 def sign(x): return (x > 0) - (x < 0)
 def mod8sub(a,b): return (a - b + 4) % 8 - 4
 
@@ -340,6 +363,7 @@ def gameLoop():
         while not gameExit:
             
             engmt.draw_tick()
+            engmt.draw_masks()
             #engmt.tick_units()
             
 #            result = [[],[]]
