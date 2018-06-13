@@ -34,6 +34,7 @@ class Engagement():
         self.mask["allies"] = pg.mask.Mask((800,600))
         self.mask["enemies"] = pg.mask.Mask((800,600))
         self.mask["map"] = pg.mask.Mask((800,600))
+        self.mask["all"] = pg.mask.Mask((800,600))
         
         self.bgfile = "Assets\\cave01.png"
         self.bgimg = pg.image.load(self.bgfile)
@@ -78,7 +79,16 @@ class Engagement():
                     #color = self.disp.get_at(mpos_adj)
                     #print(color)
                     if self.mask["allies"].get_at(mpos_adj):
-                        self.activeunit = self.unitlist[0]
+                        select_dist = None
+                        for unit in self.unitlist:
+                            dist = tpldist(mpos_adj, unit.loc)
+                            if select_dist:
+                                if dist < select_dist:
+                                    select_dist = dist
+                                    self.activeunit = unit
+                            else:
+                                select_dist = dist
+                                self.activeunit = unit
                     else:
                         if self.activeunit:
                             self.activeunit.target = mpos_adj
@@ -110,11 +120,16 @@ class Engagement():
                             pg.Rect((unit.loc[0]-25, unit.loc[1]-15), (50,30)))
             
     def draw_masks(self):
+        self.mask["allies"].clear()
         for unit in self.unitlist:
             unit.tick()
             self.mask["allies"].draw(unit.mask, tplint(tpldiff(unit.loc, tplmult(unit.maskdim, 0.5))))
-            print(self.mask["allies"].get_at(pg.mouse.get_pos()))
-        #pg.draw.lines(self.disp, (200,150,150), 1, self.mask["allies"].outline())
+        #print(self.mask["all"].get_at(pg.mouse.get_pos()))
+        self.mask["all"].clear()
+        self.mask["all"].draw(self.mask["allies"], (0,0))
+        self.mask["all"].draw(self.mask["enemies"], (0,0))
+        self.mask["all"].draw(self.mask["map"], (0,0))
+        pg.draw.lines(self.disp, (200,150,150), 1, self.mask["allies"].outline())
             
     def draw_display(self):
         self.check_locs()
@@ -123,49 +138,47 @@ class Engagement():
         self.disp.blit(self.bgimg, tplsum((0,0), self.sc_loc))
         for unit in self.unitlist[np.argsort(self.loclist[:,1])]:
             unit.draw()
+            pg.draw.lines(self.disp, (200,150,150), 1, unit.mask.outline())
+#            pg.draw.ellipse(self.disp, (1, unit.eid, 0),
+#                            pg.Rect((unit.loc[0]-25, unit.loc[1]-15), (50,30)))
         pg.display.update()
     
     def adj_set(self, S):
-        return ((S, 0), (S, -S), (0, -S), (-S, -S), (-S, 0), (-S, S), (0, S), (S, S))
+        return set(((S, 0), (S, -S), (0, -S), (-S, -S), (-S, 0), (-S, S), (0, S), (S, S)))
     
-    def adjacent(self, origin, s):
+    def adjacent(self, current, s, unitmask, pathmask):
         adj = set()
         for next in self.adj_set(s):
-            color = self.disp.get_at(tuple(int(x) for x in tplsum(origin, next)))
-            #except: print("test")
-            if color[0] == 0 and color[1] == 0:
-                adj.add(tplsum(origin, next))
+#            if not pathmask.get_at(tplint(tplsum(origin, next))):
+#                adj.add(tplsum(origin, next))
+            if self.moveable(current, tplsum(current, next), unitmask, pathmask):
+                adj.add(tplsum(current, next))
+        #print("adj:", adj)
         return adj
     
-    def adj_jpt(self, origin, parent):
-        if parent == None:
-            return self.adjacent(origin)
-        S = 3 #tile side length
-        #steps = [(1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1)]
-        steps = [(S, 0), (S, -S), (0, -S), (-S, -S), (-S, 0), (-S, S), (0, S), (S, S)]
-        adj = []
-        blocked = []
-        for i in range(8):
-            #step = (S*-sign(int((i+2)%8-4))*int((i+2)%4!=0), (S*sign(i-4)*int(i%4!=0)))
-            step = steps[i]
-            adj.append(tplsum(origin, step))
-            try: color = self.disp.get_at(tuple(int(x) for x in adj[-1]))
-            except: print(adj[-1], "is not searchable")
-            if color[0] != 0 or color[1] != 0:
-                blocked.append(i)
-        p_dir = tpldir(origin, parent)
-        z = (np.angle(p_dir[0]-p_dir[1]*1j)*4/m.pi)%8
-        adj_pruned = set()
-        for idx in jpt_check(blocked, z):
-            adj_pruned.add(adj[idx])
-                
-        return adj_pruned
+    def moveable(self, origin, target, unitmask, pathmask):
+        
+        step = origin
+        heading = tpldir(origin, target)
+        
+        moveable = True
+        while moveable:
+            step = tplsum(step, heading)
+            if pathmask.overlap(unitmask, tplint(tpldiff(step, tplmult(unitmask.get_size(), 0.5)))):
+                moveable = False
+            if tpldist(step, target) <= 1: break
+        
+        return moveable
     
     def move_cost(self, current, next):
         return tpldist(current, next)
+      
+    #Find path from <unit.loc> to <target> using the A* algorithm
+    def pathfind_astar(self, unit,  loc, target, s):
+        origin = loc
+        pathmask = self.mask["all"]
+        pathmask.erase(unit.mask, tplint(tpldiff(unit.loc, tplmult(unit.maskdim, 0.5))))
         
-    #Find path from <origin> to <target> using the Jump Point algorithm
-    def pathfind_jpt(self, origin, target):
         frontier = PriorityQueue()
         frontier.put((0, origin))
         came_from = {}
@@ -173,17 +186,24 @@ class Engagement():
         came_from[origin] = None
         cost_so_far[origin] = 0
         
+        i = 0
         while not frontier.empty():
             current = frontier.get()[1]
             
-            if tpldist(current, target) <= 3:
-                target = current
+            i+=1
+            if i > 10000: break
+            
+            if current == target: break
+            
+            if tpldist(current, target) <= m.sqrt(2)*s:
+                came_from[target] = current
+                #target = current
                 break
             
-            try: self.adj_jpt(current, came_from[current])
-            except: print('no')
-            
-            for next in self.adj_jpt(current, came_from[current]):
+#            try: self.adjacent(current, s, pathmask)
+#            except: traceback.print_exc()
+            #print("current:", current)
+            for next in self.adjacent(current, s, unit.mask, pathmask):
                 new_cost = cost_so_far[current] + self.move_cost(current, next)
                 if next not in cost_so_far or new_cost < cost_so_far[next]:
                     if next not in came_from:
@@ -192,52 +212,15 @@ class Engagement():
                         frontier.put((priority, next))
                         came_from[next] = current
         
-        current = target
-        path = []
-        while current != origin:
-            path.append(current)
-            current = came_from[current]
-        path.reverse()
-        
-        return path
-      
-    #Find path from <origin> to <target> using the A* algorithm
-    def pathfind_astar(self, origin, target, s):
-        frontier = PriorityQueue()
-        frontier.put((0, origin))
-        came_from = {}
-        cost_so_far = {}
-        came_from[origin] = None
-        cost_so_far[origin] = 0
-        
-        while not frontier.empty():
-            current = frontier.get()[1]
-            
-            if current == target: break
-            
-            if tpldist(current, target) <= s:
-                came_from[target] = current
-                #target = current
-                break
-            
-            try: self.adj_jpt(current, came_from[current])
-            except: None# print('no')
-            
-            for next in self.adjacent(current, s):
-                new_cost = cost_so_far[current] + self.move_cost(current, next)
-                if next not in cost_so_far or new_cost < cost_so_far[next]:
-                    if next not in came_from:
-                        cost_so_far[next] = new_cost
-                        priority = new_cost + tpldist(next, target)**2
-                        frontier.put((priority, next))
-                        came_from[next] = current
-        
+        #print(None)
         current = target
         path = []
         while current != origin:
             path.append(current)
             try: current = came_from[current]
-            except: None
+            except:
+                traceback.print_exc()
+                #print(came_from)
         path.reverse()
         
         return path
@@ -256,12 +239,13 @@ class Unit():
         self.pawn = pg.Surface(self.pawndim, pg.SRCALPHA)
         
         self.target = []
+        self.path_course = []
         self.path = []
         self.mvspd = 2
         
         self.maskdim = (50,30)
         self.mask = pg.Surface(self.maskdim, pg.SRCALPHA)
-        pg.draw.ellipse(self.mask, (0,0,0), pg.Rect((0,0), (50,30)))
+        pg.draw.ellipse(self.mask, (0,0,0), pg.Rect((0,0), self.maskdim))
         self.mask = pg.mask.from_surface(self.mask)
         
         self.animset = "stand"
@@ -291,15 +275,31 @@ class Unit():
         if self.animframe >= self.animattr[self.animset][1]: self.animframe = 0
         
         #Check path
-        if self.pathcheck >= 0: 
-            if self.target:
-                t1 = time()
-                try:
-                    self.path = self.engmt.pathfind_astar(self.loc, self.target, 50)
-                except: traceback.print_exc()
-                pf_test.append(time() - t1)
-            self.pathcheck = 0
-        else: self.pathcheck += 1
+        #print(self.loc)
+        if self.target:
+            try:
+                self.path_course = self.engmt.pathfind_astar(self, self.loc, self.target, 3)
+                
+                pathmask = self.engmt.mask["all"]
+                pathmask.erase(self.mask, tplint(tpldiff(self.loc, tplmult(self.maskdim, 0.5))))
+                last_visible = -1
+                for waypoint in self.path_course:
+                    if self.engmt.moveable(self.loc, waypoint, self.mask, pathmask): last_visible += 1
+                    else: break
+                numwp = len(self.path_course)
+                print("last: ", last_visible, ", numwp: ", numwp-1)
+                self.path = [self.path_course[last_visible]]
+#                if last_visible == (numwp-1): self.path = [self.target]
+#                else: self.path = self.engmt.pathfind_astar(self, self.loc, self.path_course[min(1,numwp-1)], 3)
+#                elif last_visible <= 0: self.engmt.pathfind_astar(self, self.loc, self.path_course[-1], 3)
+##                else:
+##                    start_loc = self.path_course[max(0, mve_idx - 1)]
+##                    end_loc = self.path_course[mve_idx + 1]
+##                    self.path = self.path_course[:mve_idx]
+##                    self.path += self.engmt.pathfind_astar(self, start_loc, end_loc, 3)
+#                else: self.path = self.path_course
+            except: traceback.print_exc()
+            #print(self.path)
         
         #Update location
         mvmt = self.mvspd
@@ -312,9 +312,9 @@ class Unit():
             else:
                 self.loc = tplsum(self.loc, tplmult(tpldir(self.loc, self.path[0]), self.mvspd))
                 mvmt = 0
+        #self.loc = tplint(self.loc)
         if not self.path: self.target = []
         
-    
     def draw(self):
         #print(self.animframe)
         if self == self.engmt.activeunit: self.engmt.draw_cursor(self.loc, 1, 1)
@@ -354,15 +354,19 @@ def gameLoop():
     try:
         engmt = Engagement(gameDisplay)
         engmt.add_unit(Unit(), (350,200))
-        engmt.add_unit(Unit(), (300,400))
+        engmt.add_unit(Unit(), (350,250))
         
         t_fps = pg.time.get_ticks()
         frameticks = 0
         
         gameExit = False
+        
+#        engmt.activeunit = engmt.unitlist[0]
+#        engmt.activeunit.target = (350, 300)
+        
         while not gameExit:
             
-            engmt.draw_tick()
+            #engmt.draw_tick()
             engmt.draw_masks()
             #engmt.tick_units()
             
