@@ -12,8 +12,9 @@ import imageio
 import numpy as np
 import numba as nb
 from time import time
-import jps
+#import jps
 import matplotlib.pyplot as plt
+from d_star import DStar
 
 #def adj_tpl(S):
 #    return ((S, 0), (S, -S), (0, -S), (-S, -S), (-S, 0), (-S, S), (0, S), (S, S))
@@ -140,9 +141,6 @@ def gameLoop():
         bgimg = pg.image.load("Test Assets\\testmap02.png")
         bgrgb = np.array(imageio.imread("Test Assets\\testmap02.png"))
         bgbool = np.transpose(np.sum(bgrgb, axis=2)!=0)
-        
-        jps_field = jps.load_path_image("Test Assets\\testmap02.png", path_colour=0xFFFFFF)
-        jps.jps(jps_field, blob_loc[0], blob_loc[1], 700, 300)
         
         print(bgbool[(0,0)])
         

@@ -286,8 +286,8 @@ class Unit():
                 for waypoint in self.path_course:
                     if self.engmt.moveable(self.loc, waypoint, self.mask, pathmask): last_visible += 1
                     else: break
-                numwp = len(self.path_course)
-                print("last: ", last_visible, ", numwp: ", numwp-1)
+                #numwp = len(self.path_course)
+                #print("last: ", last_visible, ", numwp: ", numwp-1)
                 self.path = [self.path_course[last_visible]]
 #                if last_visible == (numwp-1): self.path = [self.target]
 #                else: self.path = self.engmt.pathfind_astar(self, self.loc, self.path_course[min(1,numwp-1)], 3)
